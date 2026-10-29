@@ -1,0 +1,6 @@
+[
+{
+  "directory": "C:\\Users\\1\\Desktop\\cpp-featured\\example",
+  "arguments": ["C:\\TDM-GCC-64\\bin\\x86_64-w64-mingw32-g++.exe", "-c", "-m64", "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-O3", "-I..\\single", "-DNDEBUG", "-o", "build\\.objs\\example\\mingw\\x86_64\\release\\src\\main.cpp.obj", "src\\main.cpp"],
+  "file": "src\\main.cpp"
+}]
