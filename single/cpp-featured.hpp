@@ -109,6 +109,63 @@ inline void println(long double x) {
 }
 
 /* ---- panic.h ---- */
+/*
+ * Copyright (c) 2026 VinkyV
+ *
+ * Portions of this file are derived from safe-cpp:
+ * https://github.com/cppalliance/safe-cpp
+ *
+ * Original code copyright its respective copyright holders.
+ * The original code is licensed under the Boost Software
+ * License - Version 1.0 (BSL-1.0).
+ */
+
+
+
+/* ---- source_location.h ---- */
+/*
+ * Copyright (c) 2026 VinkyV
+ *
+ * Portions of this file are derived from safe-cpp:
+ * https://github.com/cppalliance/safe-cpp
+ *
+ * Original code copyright its respective copyright holders.
+ * The original code is licensed under the Boost Software
+ * License - Version 1.0 (BSL-1.0).
+ */
+
+
+
+class source_location {
+public:
+  static source_location current(
+    char const* file_name     = __builtin_FILE(),
+    char const* function_name = __builtin_FUNCTION(),
+    uint32_t    line          = __builtin_LINE(),
+    uint32_t    column        = __builtin_COLUMN()
+  ) noexcept {
+    source_location loc;
+    loc._file_name     = file_name;
+    loc._function_name = function_name;
+    loc._line          = line;
+    loc._column        = column;
+    return loc;
+  }
+
+  source_location() noexcept : _file_name(""), _function_name(""), _line(0), _column(0) {}
+
+  const char*   file_name()     const noexcept { return _file_name; }
+  const char*   function_name() const noexcept { return _function_name; }
+  std::uint32_t line()          const noexcept { return _line; }
+  std::uint32_t column()        const noexcept { return _column; }
+
+
+private:
+  char const* _file_name;
+  char const* _function_name;
+  uint32_t _line;
+  uint32_t _column;
+};
 
 
 #if defined(__has_builtin)
@@ -152,39 +209,6 @@ enum class panic_code {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// source_location
-
-class source_location {
-public:
-  static source_location current(
-      const char* file_name     = STD2_BUILTIN_FILE(),
-      const char* function_name = STD2_BUILTIN_FUNCTION(),
-      std::uint32_t line        = STD2_BUILTIN_LINE(),
-      std::uint32_t column      = STD2_BUILTIN_COLUMN()) noexcept {
-    source_location loc;
-    loc.file_name_     = file_name;
-    loc.function_name_ = function_name;
-    loc.line_          = line;
-    loc.column_        = column;
-    return loc;
-  }
-
-  source_location() noexcept
-    : file_name_(""), function_name_(""), line_(0), column_(0) {}
-
-  const char*   file_name()     const noexcept { return file_name_; }
-  const char*   function_name() const noexcept { return function_name_; }
-  std::uint32_t line()          const noexcept { return line_; }
-  std::uint32_t column()        const noexcept { return column_; }
-
-private:
-  const char*   file_name_;
-  const char*   function_name_;
-  std::uint32_t line_;
-  std::uint32_t column_;
-};
-
-////////////////////////////////////////////////////////////////////////////////
 // panic_error -- thrown when STD2_PANIC_THROWS is defined.
 
 class panic_error : public std::runtime_error {
@@ -207,7 +231,7 @@ namespace detail {
 
 [[noreturn]] STD2_NOINLINE
 inline void panic_impl(panic_code code, const char* msg, std::size_t msg_len,
-                       source_location loc) {
+  source_location loc) {
 #if defined(STD2_PANIC_HANDLER)
   STD2_PANIC_HANDLER(code, msg, msg_len, loc);
   std::abort();  // handler must not return
@@ -215,12 +239,13 @@ inline void panic_impl(panic_code code, const char* msg, std::size_t msg_len,
   throw panic_error(code, std::string(msg, msg_len), loc);
 #else
   (void)code;
-  std::fprintf(stderr, "%s:%u:%u\n%s\n%.*s\n",
-               loc.file_name(),
-               static_cast<unsigned>(loc.line()),
-               static_cast<unsigned>(loc.column()),
-               loc.function_name(),
-               static_cast<int>(msg_len), msg);
+  std::fprintf(stderr, "thread \"%s\" panicked at %s:%u:%u in function %s with message \"%.*s\"\n",
+    "¯\\_(ツ)_/¯", // TODO: !!! change to real thread !!!
+    loc.file_name(),
+    static_cast<unsigned>(loc.line()),
+    static_cast<unsigned>(loc.column()),
+    loc.function_name(),
+    static_cast<int>(msg_len), msg);
   std::fflush(stderr);
   std::abort();
 #endif
@@ -259,6 +284,17 @@ inline void panic_utf(const char* msg,
 }
 
 /* ---- string_view.h ---- */
+/*
+ * Copyright (c) 2026 VinkyV
+ *
+ * Portions of this file are derived from safe-cpp:
+ * https://github.com/cppalliance/safe-cpp
+ *
+ * Original code copyright its respective copyright holders.
+ * The original code is licensed under the Boost Software
+ * License - Version 1.0 (BSL-1.0).
+ */
+
 
 
 

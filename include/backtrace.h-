@@ -1,0 +1,188 @@
+// backtrace.hpp -- Rust-style stack backtraces.
+//
+// Linux/macOS: <execinfo.h> + dladdr (link with -rdynamic on Linux so non-exported
+// function names resolve; otherwise frames print as "binary+0xoffset", which can
+// be fed to addr2line). Windows: CaptureStackBackTrace + DbgHelp (dbghelp.lib).
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  include <dbghelp.h>
+#  if defined(_MSC_VER)
+#    pragma comment(lib, "dbghelp.lib")
+#  endif
+#  define NOINLINE __declspec(noinline)
+#elif defined(__has_include)
+#  if __has_include(<execinfo.h>) && __has_include(<dlfcn.h>) && __has_include(<cxxabi.h>)
+#    include <cxxabi.h>
+#    include <dlfcn.h>
+#    include <execinfo.h>
+#    define NOINLINE __attribute__((noinline))
+#  endif
+#endif
+
+// Backtraces
+
+enum class backtrace_style { off, brief, full };
+
+// Reads CPPF_BACKTRACE / RUST_BACKTRACE, falling back to backtrace_style::brief.
+inline backtrace_style backtrace_setting() {
+  const char* v = std::getenv("CPPF_BACKTRACE");
+  if (!v) v = std::getenv("RUST_BACKTRACE");
+  if (std::strcmp(v, "0") == 0)    return backtrace_style::off;
+  if (std::strcmp(v, "full") == 0) return backtrace_style::full;
+  return backtrace_style::brief;
+}
+
+namespace detail {
+
+inline std::string hex_addr(const void* p) {
+  char tmp[40];
+  std::snprintf(tmp, sizeof tmp, "0x%llx",
+                static_cast<unsigned long long>(
+                    reinterpret_cast<std::uintptr_t>(p)));
+  return tmp;
+}
+
+// Symbolized frame names, innermost first.
+NOINLINE inline std::vector<std::string> raw_frames() {
+  std::vector<std::string> frames;
+
+#if __has_include(<execinfo.h>) && __has_include(<dlfcn.h>) && __has_include(<cxxabi.h>)
+  void* buf[128];
+  const int n = ::backtrace(buf, 128);
+  for (int i = 0; i < n; ++i) {
+    // Return addresses point past the call; step back so we symbolize the
+    // calling function, not whatever follows it.
+    const void* addr = i == 0 ? buf[i]
+                              : static_cast<const char*>(buf[i]) - 1;
+    Dl_info info;
+    std::string name;
+    if (::dladdr(addr, &info) && info.dli_sname) {
+      int status = 0;
+      char* dem = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
+      name = (status == 0 && dem) ? dem : info.dli_sname;
+      std::free(dem);
+    } else if (info.dli_fname) {
+      const std::uintptr_t off =
+          reinterpret_cast<std::uintptr_t>(addr) -
+          reinterpret_cast<std::uintptr_t>(info.dli_fbase);
+      name = std::string(info.dli_fname) + "+" +
+              hex_addr(reinterpret_cast<const void*>(off));
+    } else {
+      name = hex_addr(addr);
+    }
+    frames.push_back(std::move(name));
+  }
+
+#elif defined(_WIN32)
+  void* buf[128];
+  const USHORT n = CaptureStackBackTrace(0, 128, buf, nullptr);
+  HANDLE proc = GetCurrentProcess();
+  static const bool sym_ok =
+      (SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS),
+        SymInitialize(proc, nullptr, TRUE) != FALSE);
+  alignas(SYMBOL_INFO) char sbuf[sizeof(SYMBOL_INFO) + 512];
+  for (USHORT i = 0; i < n; ++i) {
+    std::string name;
+    SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(sbuf);
+    std::memset(sym, 0, sizeof(SYMBOL_INFO));
+    sym->MaxNameLen   = 511;
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    DWORD64 disp = 0;
+    if (sym_ok &&
+        SymFromAddr(proc, reinterpret_cast<DWORD64>(buf[i]), &disp, sym))
+      name = sym->Name;
+    else
+      name = hex_addr(buf[i]);
+    frames.push_back(std::move(name));
+  }
+#endif
+
+  return frames;
+}
+
+// True for functions defined in namespace std2 (looks only at the part before
+// the argument list, so `foo(std2::str)` is not mistaken for one).
+inline bool is_std2_frame(const std::string& n) {
+  const std::size_t paren = n.find('(');
+  const std::size_t hit   = n.find("std2::");
+  return hit != std::string::npos && (paren == std::string::npos || hit < paren);
+}
+
+// Frames belonging to the C/C++ runtime or thread start-up machinery. The
+// short backtrace stops before these (Rust does the same at
+// __rust_begin_short_backtrace).
+inline bool is_runtime_frame(const std::string& n) {
+  static const char* const names[] = {
+    "start_thread", "clone", "clone3", "_start", "__libc_start_main",
+    "__libc_start_call_main", "_pthread_start", "thread_start",
+    "BaseThreadInitThunk", "RtlUserThreadStart",
+  };
+  for (std::size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
+    if (n == names[i]) return true;
+  // Unresolved frames are printed as "<library path>+0xoffset".
+  return n.find("libc.so") != std::string::npos ||
+          n.find("libstdc++.so") != std::string::npos ||
+          n.find("libpthread") != std::string::npos ||
+          n.find("libc++.") != std::string::npos ||
+          n.find("libsystem_") != std::string::npos;
+}
+
+} // namespace detail
+
+// Formats the current stack in Rust's style:
+//
+//   stack backtrace:
+//      0: name
+//      1: name
+//
+// With full == false, frames belonging to std2 itself and everything after
+// `main` is trimmed, like Rust's "short backtrace".
+inline std::string backtrace_string(bool full = false) {
+  std::vector<std::string> f = detail::raw_frames();
+
+  std::size_t begin = 0, end = f.size();
+  if (!full) {
+    // Drop the panic machinery: everything up to and including the first run
+    // of std2 frames (this also skips e.g. a sanitizer's backtrace()
+    // interceptor sitting above them).
+    std::size_t k = 0;
+    while (k < end && !detail::is_std2_frame(f[k])) ++k;
+    if (k < end) {
+      while (k < end && detail::is_std2_frame(f[k])) ++k;
+      begin = k;
+    }
+    for (std::size_t i = begin; i < end; ++i) {
+      if (f[i] == "main") { end = i + 1; break; }
+      if (detail::is_runtime_frame(f[i])) { end = i; break; }
+    }
+  }
+
+  std::string out = "stack backtrace:\n";
+  if (begin >= end) {
+    out += "  <unavailable>\n";
+    return out;
+  }
+  for (std::size_t i = begin; i < end; ++i) {
+    char idx[32];
+    std::snprintf(idx, sizeof idx, "%4zu: ", i - begin);
+    out += idx;
+    out += f[i];
+    out += '\n';
+  }
+  return out;
+}
